@@ -38,21 +38,25 @@ if curl -sf --max-time 5 "$GRAFANA_URL/api/health" >/dev/null; then pass "Grafan
 if curl -sf --max-time 5 "$GRAFANA_URL/api/datasources/uid/tempo" >/dev/null; then pass "datasource Tempo provisionado"; else nok "datasource Tempo não encontrado"; fi
 
 echo "5. Traces do serviço $SERVICE no Tempo"
+# Com o Tempo recém-zerado (make clean), o primeiro trace pode levar mais de 30 s
+# para aparecer na busca. Espera até TRACE_TIMEOUT segundos (padrão 90).
+TRACE_TIMEOUT=${TRACE_TIMEOUT:-90}
 found=""
-for _ in $(seq 1 15); do
+for i in $(seq 1 $((TRACE_TIMEOUT / 3))); do
+  [ "$i" -eq 2 ] && printf '  … aguardando o Tempo indexar (até %ss)\n' "$TRACE_TIMEOUT"
   now=$(date +%s)
   res=$(curl -s -G --max-time 5 "$TEMPO_URL/api/search" \
     --data-urlencode "q={ resource.service.name = \"$SERVICE\" }" \
     --data-urlencode "start=$((now - 3600))" --data-urlencode "end=$((now + 60))" \
     --data-urlencode "limit=5")
   if grep -q '"traceID"' <<<"$res"; then found=$res; break; fi
-  sleep 2
+  sleep 3
 done
 if [ -n "$found" ]; then
   id=$(grep -o '"traceID":"[0-9a-f]*"' <<<"$found" | head -1 | cut -d'"' -f4)
   pass "trace encontrado (ex.: $id)"
 else
-  nok "nenhum trace de $SERVICE na última hora (veja a seção Troubleshooting do README)"
+  nok "nenhum trace de $SERVICE após ${TRACE_TIMEOUT}s (veja a seção Troubleshooting do README)"
 fi
 
 echo

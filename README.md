@@ -201,7 +201,8 @@ Com o psr3 desligado (padrão), a mesma linha sai com os placeholders literais
 
 **O trace não aparece no Grafana**
 1. Rode `make checklist`: ele mostra qual etapa falha.
-2. O Tempo leva alguns segundos (até ~15 s) para indexar um trace novo na busca. Espere e
+2. O Tempo leva alguns segundos para indexar um trace novo na busca (até ~30 s logo após
+   um `make clean`; o checklist espera até 90 s, ajustável com `TRACE_TIMEOUT=120`). Espere e
    rode de novo. Confira também o intervalo de tempo do Explore (ex.: *Last 15 minutes*).
 3. Os spans estão chegando no collector? `docker compose logs collector | grep spans` deve
    mostrar linhas `info Traces ... "spans": N` (o exporter `debug` em modo `basic` loga
