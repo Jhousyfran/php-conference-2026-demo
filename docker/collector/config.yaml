@@ -1,0 +1,33 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        # Recebe OTLP/HTTP da aplicação PHP
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Exporter de debug: imprime no log do collector.
+  # basic    -> uma linha por lote (padrão, quase silencioso)
+  # detailed -> cada span com atributos (ex.: COLLECTOR_DEBUG_VERBOSITY=detailed make up)
+  debug:
+    verbosity: ${env:COLLECTOR_DEBUG_VERBOSITY:-basic}
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_grpc/tempo, debug]
