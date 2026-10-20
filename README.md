@@ -1,4 +1,12 @@
+<p align="center">
+  <a href="https://phpconference.com.br/palestras-php-conference-brasil-2026/">
+    <img src="docs/capa-php-conference-brasil-2026.png" alt="PHP Conference Brasil 2026" width="100%">
+  </a>
+</p>
+
 # Demo: encontrando um N+1 em Laravel com OpenTelemetry
+
+> Live demo da palestra na **[PHP Conference Brasil 2026](https://phpconference.com.br/palestras-php-conference-brasil-2026/)**.
 
 Live demo para palestra sobre observabilidade em PHP. Uma aplicação Laravel com uma
 query N+1 proposital é instrumentada **sem nenhuma linha de código de telemetria no
