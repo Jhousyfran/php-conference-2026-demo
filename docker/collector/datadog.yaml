@@ -1,0 +1,31 @@
+# Camada opcional: manda traces e logs também para o Datadog (make up-datadog).
+# O Collector junta este arquivo com o config.yaml. Mapas são mesclados, mas listas
+# são substituídas: por isso os pipelines traces e logs repetem os exporters do
+# config.yaml e só acrescentam os do Datadog.
+
+connectors:
+  # Calcula as métricas de APM do Datadog (hits, erros, latência por recurso) a
+  # partir dos traces, como o Datadog Agent faria
+  datadog/connector: {}
+
+exporters:
+  datadog:
+    api:
+      key: ${env:DD_API_KEY}
+      site: ${env:DD_SITE}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_grpc/tempo, span_metrics, datadog/connector, datadog, debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/loki, datadog, debug]
+    # Só as métricas de APM do connector. As do span_metrics continuam só no
+    # Prometheus (no Datadog seriam cobradas como custom metrics).
+    metrics/datadog:
+      receivers: [datadog/connector]
+      exporters: [datadog]

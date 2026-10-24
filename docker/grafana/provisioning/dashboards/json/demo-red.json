@@ -921,7 +921,7 @@
     {
       "id": 15,
       "type": "row",
-      "title": "Do sintoma ao trace (Tempo)",
+      "title": "Por versão (deploys)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -933,6 +933,164 @@
     },
     {
       "id": 16,
+      "type": "timeseries",
+      "title": "Taxa de erro por versão",
+      "description": "Errors agrupados pelo resource attribute service.version (OTEL_RESOURCE_ATTRIBUTES). Depois de um `make deploy`, a versão nova aparece como uma linha própria.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service_version) (rate(traces_span_metrics_calls_total{service_name=\"demo-pedidos\", span_kind=\"SPAN_KIND_SERVER\", http_route=~\"$rota\", status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval])) / sum by (service_version) (rate(traces_span_metrics_calls_total{service_name=\"demo-pedidos\", span_kind=\"SPAN_KIND_SERVER\", http_route=~\"$rota\"}[$__rate_interval]))",
+          "legendFormat": "v{{service_version}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Requisições/s e erros/s por versão",
+      "description": "Tráfego e erros (barras empilhadas por versão): mostra a troca de versão no deploy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service_version) (rate(traces_span_metrics_calls_total{service_name=\"demo-pedidos\", span_kind=\"SPAN_KIND_SERVER\", http_route=~\"$rota\"}[$__rate_interval]))",
+          "legendFormat": "req/s v{{service_version}}",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service_version) (rate(traces_span_metrics_calls_total{service_name=\"demo-pedidos\", span_kind=\"SPAN_KIND_SERVER\", http_route=~\"$rota\", status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval]))",
+          "legendFormat": "erros/s v{{service_version}}",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 18,
+      "type": "row",
+      "title": "Do sintoma ao trace (Tempo)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "panels": []
+    },
+    {
+      "id": 19,
       "type": "table",
       "title": "Traces com erro",
       "description": "Requisições que terminaram com status ERROR. Abra uma para ver a exceção e o stack trace no span.",
@@ -944,7 +1102,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 34
+        "y": 43
       },
       "targets": [
         {
@@ -968,7 +1126,7 @@
       }
     },
     {
-      "id": 17,
+      "id": 20,
       "type": "table",
       "title": "Suspeitos de N+1 (> 100 queries no trace)",
       "description": "TraceQL funcionando como detector: só traces com mais de 100 spans de MySQL.",
@@ -980,7 +1138,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 34
+        "y": 43
       },
       "targets": [
         {
@@ -1004,7 +1162,7 @@
       }
     },
     {
-      "id": 18,
+      "id": 21,
       "type": "row",
       "title": "Logs (Loki) correlacionados",
       "collapsed": false,
@@ -1012,12 +1170,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 52
       },
       "panels": []
     },
     {
-      "id": 19,
+      "id": 22,
       "type": "logs",
       "title": "Logs de erro (expanda uma linha -> \"Abrir trace no Tempo\")",
       "description": "Logs exportados via OTLP pelo auto-laravel. Cada linha carrega trace_id e span_id; o campo derivado trace_id abre o trace.",
@@ -1029,7 +1187,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 53
       },
       "targets": [
         {

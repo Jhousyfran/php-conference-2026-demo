@@ -6,7 +6,7 @@ GRAFANA_PORT ?= 3000
 APP_URL      := http://localhost:$(APP_PORT)
 REQUESTS     ?= 20
 
-.PHONY: help up down clean load load-fast load-pagamentos trafego log-app logs logs-collector checklist ps
+.PHONY: help up deploy up-datadog down clean load load-fast load-pagamentos trafego log-app logs logs-collector checklist ps
 
 help: ## Lista os comandos
 	@grep -hE '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk 'BEGIN {FS = ":.*## "} {printf "  make %-15s %s\n", $$1, $$2}'
@@ -17,6 +17,16 @@ up: ## Sobe tudo (build + migrations + seed na primeira vez)
 	@echo "App:     $(APP_URL)/api/pedidos"
 	@echo "Grafana: http://localhost:$(GRAFANA_PORT)/explore"
 	@echo "Dashboard: http://localhost:$(GRAFANA_PORT)/d/demo-red"
+
+deploy: ## Simula um deploy: make deploy VERSAO=1.1.0 TAXA_ERRO=50 (só recria a app)
+	APP_VERSION=$(or $(VERSAO),1.1.0) PAGAMENTO_TAXA_ERRO=$(or $(TAXA_ERRO),20) docker compose up -d --wait app
+	@echo "app na versão $(or $(VERSAO),1.1.0), taxa de erro do gateway $(or $(TAXA_ERRO),20)%"
+
+up-datadog: ## Sobe tudo mandando traces e logs TAMBÉM para o Datadog (precisa de .env.datadog)
+	@test -f .env.datadog || { echo "Crie o .env.datadog: cp .env.datadog.example .env.datadog e preencha DD_API_KEY"; exit 1; }
+	@grep -qE '^DD_API_KEY=.+' .env.datadog || { echo "DD_API_KEY vazio em .env.datadog"; exit 1; }
+	docker compose -f docker-compose.yml -f docker-compose.datadog.yml up -d --build --wait
+	@echo "Datadog: APM -> Services -> demo-pedidos (env:demo)"
 
 down: ## Para os containers (mantém banco e traces)
 	docker compose down

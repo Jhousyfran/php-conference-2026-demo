@@ -12,6 +12,10 @@ services:
       # true desliga o SDK inteiro (útil para medir o overhead da instrumentação)
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
       OTEL_SERVICE_NAME: demo-pedidos
+      # Tags de versão e ambiente (no Datadog viram `version` e `env`). O `make deploy`
+      # troca APP_VERSION para simular um deploy e comparar erros por versão no dashboard.
+      OTEL_RESOURCE_ATTRIBUTES: service.version=${APP_VERSION:-1.0.0},deployment.environment.name=demo
+      PAGAMENTO_TAXA_ERRO: ${PAGAMENTO_TAXA_ERRO:-20}
       OTEL_TRACES_EXPORTER: otlp
       OTEL_METRICS_EXPORTER: none
       # Logs: o auto-laravel escuta o evento MessageLogged e exporta cada Log::info/error

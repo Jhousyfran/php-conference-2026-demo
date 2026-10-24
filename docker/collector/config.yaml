@@ -19,10 +19,19 @@ connectors:
       - name: http.route
       - name: http.request.method
       - name: http.response.status_code
+      # resource attribute (OTEL_RESOURCE_ATTRIBUTES): erros e latência por versão
+      - name: service.version
     # Exemplars: cada ponto do histograma guarda um trace_id (clique no gráfico -> trace)
     exemplars:
       enabled: true
     metrics_flush_interval: 5s
+    # Cada worker do PHP-FPM tem um process.pid diferente no resource. Sem isto o
+    # connector cria um contador por pid, o exporter Prometheus (que não tem pid como
+    # label) junta as séries e só uma sobrevive: com 2 workers, metade das requests sumia.
+    resource_metrics_key_attributes:
+      - service.name
+      - service.version
+      - deployment.environment.name
 
 exporters:
   otlp_grpc/tempo:

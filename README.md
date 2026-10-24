@@ -82,6 +82,8 @@ imprime os links.
 | `make load` / `make load-fast` | ~20 requests em `/api/pedidos` / `/api/pedidos-otimizado` (`REQUESTS=50 make load` muda a quantidade) |
 | `make load-pagamentos` | ~20 POSTs em `/api/pagamentos` (~20% respondem 500) |
 | `make trafego` | Tráfego misto por `DURACAO` segundos (padrão 120): N+1, otimizado e pagamentos |
+| `make deploy` | Simula um deploy: `make deploy VERSAO=1.1.0 TAXA_ERRO=50` recria só a app com outra versão e outra taxa de erro do gateway. `make up` volta para a 1.0.0 |
+| `make up-datadog` | Sobe tudo mandando traces e logs **também** para o Datadog (precisa de `.env.datadog`, veja abaixo) |
 | `make log-app` | Últimas 20 linhas do `laravel.log` (com `trace_id`/`span_id`) |
 | `make logs` | Logs dos containers da app e do collector |
 | `make logs-collector` | Reinicia o collector com o exporter `debug` em modo `detailed` (cada span no log) |
@@ -117,13 +119,23 @@ TraceQL extra que "detecta" o N+1 (só retorna traces com mais de 100 spans de M
 { resource.service.name = "demo-pedidos" && span.db.system.name = "mysql" } | count() > 100
 ```
 
-## Roteiro da demo (5 passos)
+## Roteiro da demo
+
+Três atos: o **trace** acha o N+1, o **dashboard** mostra a saúde do serviço inteiro e os
+**logs** contam o que aconteceu em cada erro. A história que amarra tudo:
+**métrica (algo está errado) → trace (onde) → log (por quê)**.
+
+**Antes de subir no palco:** `make up`, `make checklist` (20 ✔) e deixe abertas três abas do
+Grafana: Explore com Tempo, o dashboard (`/d/demo-red`) e Explore com Loki. Tenha um
+segundo terminal pronto para o `make trafego`.
+
+### Ato 1: o N+1 no trace
 
 1. **O código inocente.** Mostre `app/app/Http/Controllers/PedidoController.php` (`index`):
    um `limit(100)->get()` e um `map`. Não há nenhuma linha de telemetria. Rode `make load`
    e mostre os tempos (~110–200 ms).
 2. **Onde está a telemetria?** Mostre o `docker/php/Dockerfile` (extensão `opentelemetry`),
-   os três pacotes no `composer.json` e as variáveis `OTEL_*` no `docker-compose.yml`.
+   os pacotes no `composer.json` e as variáveis `OTEL_*` no `docker-compose.yml`.
    "Zero código" significa isto.
 3. **O trace.** Grafana → Explore → Tempo →
    `{ resource.service.name = "demo-pedidos" }` → abra um `GET /api/pedidos`. Mostre os
@@ -133,9 +145,57 @@ TraceQL extra que "detecta" o N+1 (só retorna traces com mais de 100 spans de M
 4. **A correção.** Mostre o método `otimizado()` (`with(['cliente', 'itens'])`), rode
    `make load-fast` e abra um `GET /api/pedidos-otimizado`: **7 spans, 3 queries**, com
    `where id in (...)`. Nada é editado ao vivo; o plano B já está pronto.
-5. **Lado a lado e números.** Use o *split view* do Explore com os dois traces e feche com a
-   tabela abaixo. Opcional: a TraceQL `| count() > 100` como "alerta" de N+1, e a
-   correlação log ↔ trace.
+5. **Lado a lado.** *Split view* do Explore com os dois traces e a tabela de
+   [Resultados medidos](#resultados-medidos). Opcional: a TraceQL `| count() > 100` como
+   "detector" de N+1.
+
+### Ato 2: o dashboard (do trace à métrica)
+
+6. **Gancho:** "trace mostra **uma** request. E quando são milhares por minuto?". Rode
+   `make trafego` no segundo terminal (2 min de tráfego misto; `DURACAO=300 make trafego`
+   para mais tempo) e espere uns 20 s para os gráficos encherem.
+7. **De onde vêm as métricas.** Mostre o connector `span_metrics` em
+   `docker/collector/config.yaml`: o PHP continua sem emitir métrica nenhuma, e o Collector
+   transforma cada span em contador e histograma. "Um sinal virou dois sem mudar a app."
+8. **Os sinais vitais.** Abra `/d/demo-red`. Leia a linha de cima: requisições/s, taxa de
+   erro, p95 e **queries SQL por requisição** (~40: o N+1 aparece numa métrica, sem abrir
+   trace).
+9. **Latência por rota.** Painel *Latência p95 por rota*: N+1 ~150–200 ms × otimizado
+   ~50 ms × pagamento ~10–20 ms. Em *p50 × p95 × p99*, mostre que a **média mente** (~45 ms)
+   e o p95 (~175 ms) é ~4× maior: por isso se usa percentil.
+10. **Exemplar: da métrica ao trace.** Passe o mouse num losango da linha do
+    `GET /api/pedidos` e clique no link do trace: cai direto na escadinha de 201 queries do
+    ato 1. É a ponte entre os dois mundos.
+
+### Ato 3: erros e logs (do sintoma à causa)
+
+11. **"E esses erros?"** Painel *Taxa de erro por rota*: a taxa geral (~6%) esconde que só
+    `POST /api/pagamentos` falha, em ~20% das chamadas. Mostre o `PagamentoController`: um
+    `throw` e dois `Log::info`, nenhuma linha de telemetria.
+12. **A exceção no trace.** Painel *Traces com erro* → abra um → clique no span raiz
+    `POST /api/pagamentos` → seção **Events** → `exception`: tipo, mensagem e stack trace com
+    `PagamentoController.php:23`.
+13. **Do trace para o log.** No mesmo span, clique em **Logs for this span**: o Loki abre ao
+    lado com os logs **daquela request**: "Cobrando pedido N no gateway…" e o erro.
+14. **Do log para o trace.** Na aba do Loki,
+    `{service_name="demo-pedidos"} | detected_level="error"` (ou o painel *Logs de erro* do
+    dashboard) → expanda uma linha → **Abrir trace no Tempo**.
+15. **O log de sempre.** `make log-app`: o `laravel.log` também traz `trace_id` e `span_id`
+    no fim de cada linha. Copie um, cole no TraceQL e o trace abre. "O log que vocês já têm
+    hoje passa a apontar para o trace."
+
+16. **Opcional: o deploy ruim.** Com o `make trafego` rodando, `make deploy VERSAO=1.1.0
+    TAXA_ERRO=50`. Em ~30 s o painel *Taxa de erro por versão* mostra a 1.1.0 em ~50%, ao lado
+    da linha da 1.0.0 (~20%) que para no momento do deploy. "Com a tag de versão, a pergunta 'foi o deploy?' se responde num gráfico."
+    No fim, `make up` volta para a 1.0.0.
+17. **Opcional: mesmo dado, outro backend.** Se tiver conta Datadog, suba antes com
+    `make up-datadog` e mostre o mesmo `demo-pedidos` no APM do Datadog: a aplicação não mudou,
+    só o Collector. É o argumento contra o *vendor lock-in*.
+
+**Fechamento:** os três sinais (trace, métrica e log) saíram da mesma instrumentação, sem
+código de telemetria no controller, e estão ligados pelo `trace_id`.
+
+Faltando tempo? Faça os atos 1 e 2 (passos 1–10) e só mostre o passo 12 do ato 3.
 
 ## Dashboard RED (Rate, Errors, Duration)
 
@@ -146,7 +206,8 @@ outro terminal. O dashboard atualiza a cada 5 s.
 O connector `span_metrics` do Collector lê cada span que passa e gera um contador
 (`traces_span_metrics_calls_total`) e um histograma de duração
 (`traces_span_metrics_duration_milliseconds_*`), com as dimensões `span_name`,
-`status_code`, `http.route`, `http.request.method` e `http.response.status_code`. O
+`status_code`, `http.route`, `http.request.method`, `http.response.status_code` e
+`service.version` (resource attribute). O
 Prometheus faz scrape do Collector em `:8889`. Ou seja: **um sinal (trace) vira dois
 (trace + métrica)** sem mudar a aplicação.
 
@@ -155,24 +216,42 @@ Prometheus faz scrape do Collector em `:8889`. Ou seja: **um sinal (trace) vira 
 | Requisições/s, Taxa de erro, Latência p95 | Os três números RED do serviço | Os "sinais vitais": se só puder olhar para três números, olhe para estes |
 | Queries SQL por requisição | spans `sql SELECT` ÷ requisições | Sintoma de N+1 visível **numa métrica**, sem abrir trace |
 | Requisições/s por rota | Rate, empilhado | Onde está o tráfego |
-| Taxa de erro por rota | Errors, linha tracejada em 5% | Só `/api/pagamentos` erra (~20%); a média geral esconde isso |
-| Latência p95 por rota + exemplars | Duration por rota | N+1 ~150 ms × otimizado ~50 ms × pagamento ~10 ms. **Clique num losango** (exemplar): abre o trace exato daquele ponto no Tempo |
-| p50 × p95 × p99 × média | Percentis do conjunto | A média (~40 ms) mente: o p95 é ~3× maior. Por que se usa percentil e não média |
+| Taxa de erro por rota | Errors, linha tracejada em 5% | Só `/api/pagamentos` erra (~15–20%); a média geral (~6%) esconde isso |
+| Latência p95 por rota + exemplars | Duration por rota | N+1 ~150–200 ms × otimizado ~50 ms × pagamento ~10–20 ms. **Clique num losango** (exemplar): abre o trace exato daquele ponto no Tempo |
+| p50 × p95 × p99 × média | Percentis do conjunto | A média (~45 ms) mente: o p95 (~175 ms) é ~4× maior. Por que se usa percentil e não média |
 | Respostas por status HTTP | 200 × 500 | — |
-| Queries SQL/s × Requisições/s | Duas linhas | ~17 req/s geram ~680 queries/s no banco |
+| Queries SQL/s × Requisições/s | Duas linhas | ~16 req/s geram ~660 queries/s no banco |
 | Resumo RED por rota | Tabela | Uma linha por rota com req/s, erro e p95 |
+| Taxa de erro por versão | Errors agrupados por `service.version` | Depois do `make deploy`, a versão nova vira uma linha própria: "o erro subiu na 1.1.0" |
+| Requisições/s e erros/s por versão | Tráfego por versão | Mostra a troca de versão no momento do deploy |
 | Traces com erro | TraceQL `status = error` | Abra um: o span raiz tem o evento `exception` com tipo, mensagem e stack trace (seção *Events* do span) |
 | Suspeitos de N+1 | TraceQL `\| count() > 100` | A query de "detecção" do roteiro, agora como painel |
 | Logs de erro (Loki) | `detected_level="error"` | Expanda uma linha: stack trace nos campos e o botão **Abrir trace no Tempo** |
 
-Roteiro sugerido (depois do passo 5): `make trafego` → dashboard → "o p95 da
-`/api/pedidos` é 3× o do otimizado" → clique no exemplar → cai no trace com a escadinha de
-201 queries. Depois: "e esses 500?" → painel *Traces com erro* → exceção do gateway no span.
-É o fluxo **métrica (algo está errado) → trace (onde e por quê)**.
+No [roteiro da demo](#roteiro-da-demo), o dashboard é o ato 2 (passos 6–10) e os painéis de
+erro e logs abrem o ato 3.
 
-Números de uma rodada de `scripts/trafego.sh 60` nesta máquina (2026-10-24, janela de 1 min):
-16,9 req/s; taxa de erro geral 11,8% (27,5% em `/api/pagamentos`); p95 por rota 147 ms
-(N+1), 48 ms (otimizado) e 10 ms (pagamentos); 40 queries SQL por requisição em média.
+Números de uma rodada de `scripts/trafego.sh 60` nesta máquina (2026-10-24, janela de 1 min,
+960 requests): 15,9 req/s (o próprio script fez 16/s); taxa de erro geral 5,8% (14,6% em
+`/api/pagamentos`, sorteio de 20% que nessa rodada saiu baixo); p95 por rota 199 ms (N+1),
+49 ms (otimizado) e 22 ms (pagamentos); p50 29 ms, média 46 ms, p95 175 ms; 42 queries SQL
+por requisição e 664 queries/s.
+
+### Versões e deploy
+
+A app envia `OTEL_RESOURCE_ATTRIBUTES=service.version=${APP_VERSION:-1.0.0},deployment.environment.name=demo`.
+O `span_metrics` usa `service.version` como dimensão, então dá para agrupar qualquer painel
+por versão. Para simular um deploy ruim no palco (testado):
+
+```bash
+make trafego &                          # tráfego rodando
+make deploy VERSAO=1.1.0 TAXA_ERRO=50   # "deploy" da 1.1.0 com o gateway falhando 50%
+```
+
+A app é recriada (~10 s; o nginx resolve o nome `app` a cada request, então não precisa
+reiniciar). No painel *Taxa de erro por versão* a linha da 1.1.0 aparece em ~50% (medido:
+60 chamadas, 30 com HTTP 500, e o contador da 1.1.0 fechou em 30/30). `make up` volta para a
+1.0.0 com 20%.
 
 > Mudou `docker/collector/config.yaml`, `docker/prometheus/prometheus.yml`,
 > `docker/loki/loki.yaml` ou o provisioning do Grafana? Rode
@@ -224,6 +303,13 @@ Como os números foram obtidos:
   autoload do Composer, antes de o Laravel ler o `.env`. Por isso elas ficam no
   `docker-compose.yml`, e o pool do FPM usa `clear_env = no` (`docker/php/zz-otel.conf`). No
   `app/.env` elas aparecem só como documentação.
+- **`resource_metrics_key_attributes` no `span_metrics` é obrigatório com PHP-FPM.** Cada
+  worker do FPM manda spans com um `process.pid` diferente no resource. Sem essa opção o
+  connector cria um contador por pid; o exporter Prometheus não tem o pid como label, as
+  séries colidem e só uma sobrevive. Com 2 workers, **metade das requests sumia das
+  métricas** (medido: 60 requests, contador em 30; o Tempo tinha os 60 traces). Com a chave
+  restrita a `service.name`, `service.version` e `deployment.environment.name`, o contador
+  bate com o curl.
 - **CLI não é traçado** (padrão do auto-laravel; `OTEL_PHP_TRACE_CLI_ENABLED=false`), e o
   entrypoint ainda desliga o SDK em migrations e seed para não gerar traces de bootstrap.
 
@@ -284,6 +370,44 @@ no editor TraceQL do Explore (Tempo). O trace abre direto.
 > variáveis de link estão escritas como `$${__span.traceId}` e `$${__value.raw}`. Sem o `$$`,
 > a query do botão sai com `trace_id=""` (aconteceu na primeira tentativa).
 
+## Opcional: mandar também para o Datadog
+
+Desligado por padrão: o `make up` não muda e a demo continua rodando offline. Com
+`make up-datadog`, o **mesmo Collector** manda traces e logs para o Tempo e o Loki **e**
+para o Datadog. Nada muda no PHP.
+
+```bash
+cp .env.datadog.example .env.datadog   # ignorado pelo git
+# preencha DD_API_KEY e DD_SITE (datadoghq.com, us5.datadoghq.com, datadoghq.eu...)
+make up-datadog
+```
+
+Como funciona:
+
+- `docker-compose.datadog.yml` passa um segundo `--config` ao Collector:
+  `docker/collector/datadog.yaml`. O Collector **mescla** os dois arquivos. Mapas se juntam,
+  mas listas são substituídas, por isso os pipelines `traces` e `logs` repetem os exporters
+  do `config.yaml` e acrescentam o `datadog`.
+- **Traces:** exporter `datadog`. O connector `datadog/connector` calcula as métricas de APM
+  (hits, erros e latência por recurso), que o Datadog usa nas telas de APM; elas vão para o
+  pipeline `metrics/datadog`.
+- **Logs:** exporter `datadog`. Os logs já têm `trace_id`, e o Datadog liga log ↔ trace
+  sozinho.
+- **Métricas do `span_metrics`:** ficam só no Prometheus. No Datadog seriam cobradas como
+  custom metrics e duplicariam as do connector.
+- **Tags:** `service.name` → `service`, `deployment.environment.name` → `env` (`demo`) e
+  `service.version` → `version`. No Datadog: APM → Services → `demo-pedidos`, filtro
+  `env:demo`, e a comparação entre versões na seção *Deployments* do serviço.
+
+**O que foi testado e o que não foi.** Os componentes `datadog` (exporter e connector)
+existem na imagem `otel/opentelemetry-collector-contrib:0.163.1` usada aqui. Subi com uma
+**chave falsa**: o Collector carrega a configuração mesclada, loga `api_key ... is invalid` e
+**a stack open source não é afetada** (10 de 10 traces no Tempo e 10 de 10 logs no Loki
+durante o teste). Eu **não** testei a chegada dos dados no Datadog, porque não havia conta.
+Com uma chave real, confira em APM → Services e Logs (`service:demo-pedidos`).
+
+Para desligar: `make up` (o Collector volta a usar só o `config.yaml`).
+
 ## Troubleshooting
 
 **O trace não aparece no Grafana**
@@ -327,6 +451,8 @@ no editor TraceQL do Explore (Tempo). O trace abre direto.
 
 ```
 docker-compose.yml          # app, nginx, mysql, collector, tempo, loki, prometheus, grafana
+docker-compose.datadog.yml  # override opcional: Collector também manda para o Datadog
+.env.datadog.example        # modelo do .env.datadog (DD_API_KEY, DD_SITE; não vai para o git)
 Makefile
 .env                        # portas do host (lido pelo compose)
 docker/php/Dockerfile       # PHP 8.3 FPM + ext opentelemetry/protobuf/pdo_mysql
@@ -334,6 +460,7 @@ docker/php/entrypoint.sh    # espera o MySQL, migrate, seed idempotente, cache
 docker/php/zz-otel.conf     # clear_env = no
 docker/nginx/default.conf
 docker/collector/config.yaml
+docker/collector/datadog.yaml   # camada opcional do Collector para o Datadog
 docker/tempo/tempo.yaml
 docker/prometheus/prometheus.yml
 docker/loki/loki.yaml

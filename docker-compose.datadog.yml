@@ -1,0 +1,11 @@
+# Override opcional: o mesmo Collector manda para a stack open source E para o Datadog.
+# Uso: make up-datadog (lê DD_API_KEY e DD_SITE de .env.datadog, que não vai para o git)
+services:
+  collector:
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml
+      - --config=/etc/otelcol-contrib/datadog.yaml
+    env_file:
+      - .env.datadog
+    volumes:
+      - ./docker/collector/datadog.yaml:/etc/otelcol-contrib/datadog.yaml:ro
