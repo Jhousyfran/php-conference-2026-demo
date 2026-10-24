@@ -6,7 +6,7 @@ GRAFANA_PORT ?= 3000
 APP_URL      := http://localhost:$(APP_PORT)
 REQUESTS     ?= 20
 
-.PHONY: help up deploy up-datadog down clean load load-fast load-pagamentos trafego log-app logs logs-collector checklist ps
+.PHONY: help up deploy up-datadog deploy-vm vm-status vm-cron-on vm-cron-off vm-datadog-on vm-datadog-off down clean load load-fast load-pagamentos trafego log-app logs logs-collector checklist ps
 
 help: ## Lista os comandos
 	@grep -hE '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk 'BEGIN {FS = ":.*## "} {printf "  make %-15s %s\n", $$1, $$2}'
@@ -27,6 +27,24 @@ up-datadog: ## Sobe tudo mandando traces e logs TAMBÉM para o Datadog (precisa 
 	@grep -qE '^DD_API_KEY=.+' .env.datadog || { echo "DD_API_KEY vazio em .env.datadog"; exit 1; }
 	docker compose -f docker-compose.yml -f docker-compose.datadog.yml up -d --build --wait
 	@echo "Datadog: APM -> Services -> demo-pedidos (env:demo)"
+
+deploy-vm: ## Publica a demo na VM da palestra (https://demo.deploypro.com.br)
+	./scripts/deploy-vm.sh
+
+vm-status: ## Containers, memória, disco e cron da demo na VM
+	./scripts/deploy-vm.sh --status
+
+vm-cron-on: ## Liga o cron de tráfego na VM (encher o dashboard antes da palestra)
+	./scripts/deploy-vm.sh --cron-on
+
+vm-cron-off: ## Desliga o cron de tráfego na VM (a demo continua no ar)
+	./scripts/deploy-vm.sh --cron-off
+
+vm-datadog-on: ## Na VM, manda traces e logs também para o Datadog (usa o .env.datadog local)
+	./scripts/deploy-vm.sh --datadog-on
+
+vm-datadog-off: ## Na VM, para de mandar para o Datadog
+	./scripts/deploy-vm.sh --datadog-off
 
 down: ## Para os containers (mantém banco e traces)
 	docker compose down

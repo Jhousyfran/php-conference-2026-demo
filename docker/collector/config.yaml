@@ -6,6 +6,12 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  # Recusa dados (em vez de crescer sem limite) perto do limite de memória do
+  # container; sem limite de cgroup, usa a RAM da máquina como referência
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
   batch: {}
 
 # span_metrics: transforma cada span em métricas RED (Rate, Errors, Duration).
@@ -64,11 +70,11 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, batch]
       exporters: [otlp_grpc/tempo, span_metrics, debug]
     logs:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, batch]
       exporters: [otlp_http/loki, debug]
     metrics:
       receivers: [span_metrics]

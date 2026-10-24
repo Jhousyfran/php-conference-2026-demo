@@ -1,7 +1,15 @@
 name: demo-otel-php
 
+# Rotação dos logs dos containers (o json-file do Docker não tem limite por padrão)
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
 services:
   app:
+    logging: *logging
     build:
       context: .
       dockerfile: docker/php/Dockerfile
@@ -39,6 +47,7 @@ services:
       start_period: 10s
 
   nginx:
+    logging: *logging
     image: nginx:1.30.6-alpine
     ports:
       - "${APP_PORT:-8080}:80"
@@ -49,6 +58,7 @@ services:
         condition: service_healthy
 
   mysql:
+    logging: *logging
     image: mysql:8.4.11
     environment:
       MYSQL_DATABASE: demo
@@ -64,6 +74,7 @@ services:
       retries: 40
 
   collector:
+    logging: *logging
     image: otel/opentelemetry-collector-contrib:0.163.1
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     environment:
@@ -77,6 +88,7 @@ services:
       - loki
 
   loki:
+    logging: *logging
     image: grafana/loki:3.7.8
     command: ["-config.file=/etc/loki/loki.yaml"]
     volumes:
@@ -86,6 +98,7 @@ services:
       - "3100:3100"
 
   tempo:
+    logging: *logging
     image: grafana/tempo:3.0.4
     command: ["-target=all", "-config.file=/etc/tempo.yaml"]
     volumes:
@@ -95,12 +108,16 @@ services:
       - "3200:3200"
 
   prometheus:
+    logging: *logging
     image: prom/prometheus:v3.15.1
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       # guarda os exemplars (trace_id) que o spanmetrics anexa aos histogramas
       - --enable-feature=exemplar-storage
+      # Retenção: 3 dias ou 512 MB, o que vier primeiro
+      - --storage.tsdb.retention.time=3d
+      - --storage.tsdb.retention.size=512MB
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -110,6 +127,7 @@ services:
       - collector
 
   grafana:
+    logging: *logging
     image: grafana/grafana:13.2.4
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"

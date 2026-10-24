@@ -1,0 +1,6 @@
+# /etc/cron.d/demo-otel-php: tráfego leve a cada minuto para manter o dashboard com dados.
+# flock: nunca duas execuções ao mesmo tempo; timeout: mata se travar.
+SHELL=/bin/bash
+* * * * * ubuntu flock -n /tmp/demo-otel-trafego.lock timeout 58 /data/demo-otel-php/scripts/trafego-cron.sh >> /data/demo-otel-php/trafego-cron.log 2>&1
+# o log do cron cresce ~150 KB/dia; zera aos domingos
+0 4 * * 0 ubuntu tail -n 2000 /data/demo-otel-php/trafego-cron.log > /tmp/demo-cron.tmp && mv /tmp/demo-cron.tmp /data/demo-otel-php/trafego-cron.log

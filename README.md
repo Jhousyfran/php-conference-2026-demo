@@ -84,6 +84,7 @@ imprime os links.
 | `make trafego` | Tráfego misto por `DURACAO` segundos (padrão 120): N+1, otimizado e pagamentos |
 | `make deploy` | Simula um deploy: `make deploy VERSAO=1.1.0 TAXA_ERRO=50` recria só a app com outra versão e outra taxa de erro do gateway. `make up` volta para a 1.0.0 |
 | `make up-datadog` | Sobe tudo mandando traces e logs **também** para o Datadog (precisa de `.env.datadog`, veja abaixo) |
+| `make deploy-vm` / `make vm-status` | Publica a demo na VM da palestra / mostra containers, memória, disco e cron de lá (veja [Demo na VM](#demo-na-vm-da-palestra)) |
 | `make log-app` | Últimas 20 linhas do `laravel.log` (com `trace_id`/`span_id`) |
 | `make logs` | Logs dos containers da app e do collector |
 | `make logs-collector` | Reinicia o collector com o exporter `debug` em modo `detailed` (cada span no log) |
@@ -403,10 +404,71 @@ Como funciona:
 existem na imagem `otel/opentelemetry-collector-contrib:0.163.1` usada aqui. Subi com uma
 **chave falsa**: o Collector carrega a configuração mesclada, loga `api_key ... is invalid` e
 **a stack open source não é afetada** (10 de 10 traces no Tempo e 10 de 10 logs no Loki
-durante o teste). Eu **não** testei a chegada dos dados no Datadog, porque não havia conta.
-Com uma chave real, confira em APM → Services e Logs (`service:demo-pedidos`).
+durante o teste). Depois, com uma chave real, o envio foi confirmado na VM (veja abaixo). Confira em
+APM → Services e Logs (`service:demo-pedidos`).
 
 Para desligar: `make up` (o Collector volta a usar só o `config.yaml`).
+
+**Na VM da palestra:** `make vm-datadog-on` copia o `.env.datadog` local para a VM
+(`chmod 600`) e recria só o Collector com o override do Datadog. Lá, o Collector ganha
+`mem_limit` de 448 MB e `GOMEMLIMIT` de 360 MiB, porque o exporter do Datadog pesa mais. **Testado
+com uma chave real em 2026-10-24:** o Collector loga `API key validation successful`, e os
+contadores internos mostram o mesmo volume nos dois destinos, sem falhas: 2618 spans para o
+Datadog e 2618 para o Tempo, 40 logs para o Datadog e 40 para o Loki, e 3 pontos de métricas de APM
+(connector). Os dados também foram conferidos na interface do Datadog (APM e Logs).
+`make vm-datadog-off` desliga.
+
+## Demo na VM da palestra
+
+A demo também roda em **<https://demo.deploypro.com.br/d/demo-red>**. A VM é o EC2 do
+deploypro (sa-east-1), dividido com o site e o Fideliza, e um cron gera tráfego leve o tempo
+todo para o dashboard e os logs estarem cheios no dia.
+
+```bash
+ssh-add ~/.ssh/my-ssh/id_rsa
+make deploy-vm      # rsync + build na VM (arm64) + nginx/HTTPS + cron; pede confirmação
+make vm-status      # containers, memória, disco e últimas linhas do cron
+make vm-cron-off    # desliga só o cron de tráfego (a demo continua no ar)
+make vm-cron-on     # liga de novo: o dashboard enche em ~15 min (janela padrão)
+make vm-datadog-on  # também manda traces e logs para o Datadog (copia o .env.datadog local)
+make vm-datadog-off # para de mandar para o Datadog
+scripts/deploy-vm.sh --parar   # remove o cron e para a demo (mantém os dados)
+```
+
+**Acesso:** sem login. Quem abre o link entra como **Viewer com Explore liberado**
+(`viewers_can_edit`): vê os dashboards, usa o Explore (Tempo, Loki, Prometheus), clica nos
+exemplars e nos botões trace ↔ log, e pode mexer em painéis só na própria sessão, sem salvar.
+Não é Admin anônimo como no local de propósito: um Admin pode criar datasources, e a VM tem
+outros apps em `127.0.0.1` e uma IAM role acessível pelo metadata da AWS. Para administrar,
+há o login `admin`, com a senha gerada no primeiro deploy, que fica só na VM:
+`ssh ubuntu@18.230.39.161 grep GRAFANA_ADMIN_PASSWORD /data/demo-otel-php/.env.vm`.
+
+**Como fica na VM** (`docker-compose.vm.yml` por cima do `docker-compose.yml`, com
+`--env-file .env.vm` no lugar do `.env`):
+
+| Proteção | Como |
+|---|---|
+| Memória/CPU | `mem_limit` e `cpus` por container (soma dos tetos ~2,8 GB) e `GOMEMLIMIT` nos serviços em Go. Medido na VM: **~1,2 GB em uso**, sobrando ~1,7 GB para a máquina. O Grafana 13 no arm64 usa ~500 MB (heap vivo ~330 MB), por isso tem o maior teto (896 MB) |
+| MySQL enxuto | `--innodb-buffer-pool-size=64M --performance-schema=OFF`: 490 MB → ~240 MB |
+| Disco | retenção: Tempo **48 h**, Loki **72 h** (compactor), Prometheus **3 dias ou 512 MB**; logs dos containers com rotação (3 × 10 MB); cache de build limitado a 1 GB |
+| Cron | `/etc/cron.d/demo-otel-php`, a cada minuto, ~50 s de tráfego (~37 req/min: otimizado, pagamento e N+1 a cada 3 rodadas), `flock` + `timeout 58`. **Não roda** se `/data` passar de 85% ou se a memória disponível cair abaixo de 400 MB. Log em `/data/demo-otel-php/trafego-cron.log` |
+| Collector | `memory_limiter` (80% do limite do container): recusa dados em vez de estourar |
+| Plateia | refresh mínimo de **30 s** na VM (o dashboard pede 5 s) e, no nginx, `/api/ds/query` com teto **global** de 40 queries/s além do limite por IP: se todo mundo abrir o link, alguns painéis recebem 429, mas a VM não cai. Medido: rajada de 300 queries de um IP → 90 × 200 e 210 × 429 |
+| Rede | nenhuma porta pública da demo: Grafana e app só em `127.0.0.1` (3101/8090); o nginx da VM faz o HTTPS (certificado do certbot; config em `deploy/nginx-demo.conf`, com restauração automática se o `nginx -t` falhar). Conferido de fora: 3100, 3200, 4318, 8090, 9090 e 3101 fechadas |
+| Reboot | `restart: unless-stopped` em todos os serviços |
+
+**Mudanças de infraestrutura feitas em 2026-10-24** (para a demo caber):
+
+- Instância `t4g.small` (2 GB) → **`t4g.medium` (4 GB)**: ~US$ 20 → ~US$ 39/mês (on-demand,
+  sa-east-1). Parada de ~1 min 10 s; Elastic IP mantido; os sites voltaram com os mesmos status.
+- EBS raiz **8 → 16 GB** online (o `/` estava com 99% de uso); snapshot antes:
+  `snap-0b5419d08641cbdb0`. O `/var/lib/containerd` (2,5 GB) é uma cópia antiga (o containerd
+  usa `/data/containerd`) e **não** foi apagado.
+- Registro DNS `demo.deploypro.com.br` (A → 18.230.39.161) no Route53 e certificado Let's
+  Encrypt (renovação automática do certbot).
+
+Para voltar ao tamanho anterior depois da palestra: `scripts/deploy-vm.sh --parar`, depois
+stop → `t4g.small` → start (outra parada de ~1 min).
 
 ## Troubleshooting
 
@@ -452,6 +514,10 @@ Para desligar: `make up` (o Collector volta a usar só o `config.yaml`).
 ```
 docker-compose.yml          # app, nginx, mysql, collector, tempo, loki, prometheus, grafana
 docker-compose.datadog.yml  # override opcional: Collector também manda para o Datadog
+docker-compose.vm.yml       # override da VM da palestra (limites, portas, Grafana somente leitura)
+.env.vm.example             # modelo do .env.vm (portas e senha do Grafana na VM)
+deploy/nginx-demo.conf      # nginx da VM para demo.deploypro.com.br
+deploy/cron-demo            # /etc/cron.d da VM: tráfego a cada minuto
 .env.datadog.example        # modelo do .env.datadog (DD_API_KEY, DD_SITE; não vai para o git)
 Makefile
 .env                        # portas do host (lido pelo compose)
@@ -469,6 +535,8 @@ docker/grafana/provisioning/dashboards/json/demo-red.json   # dashboard RED
 scripts/checklist.sh        # validação pré-palestra
 scripts/medir.sh            # medição de tempo de resposta
 scripts/trafego.sh          # tráfego misto para o dashboard
+scripts/trafego-cron.sh     # tráfego leve do cron da VM (com travas de disco e memória)
+scripts/deploy-vm.sh        # deploy na VM (rsync, build, nginx, certbot, cron)
 app/                        # Laravel 13
   app/Http/Controllers/{Pedido,Pagamento}Controller.php
   app/Logging/AdicionaTraceContext.php   # trace_id/span_id no laravel.log

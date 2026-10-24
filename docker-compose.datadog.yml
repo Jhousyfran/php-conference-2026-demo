@@ -7,5 +7,9 @@ services:
       - --config=/etc/otelcol-contrib/datadog.yaml
     env_file:
       - .env.datadog
+    # o exporter do Datadog (traces + logs + APM stats) pesa mais que os outros juntos
+    environment:
+      GOMEMLIMIT: 360MiB
+    mem_limit: 448m
     volumes:
       - ./docker/collector/datadog.yaml:/etc/otelcol-contrib/datadog.yaml:ro

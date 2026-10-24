@@ -18,11 +18,11 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, batch]
       exporters: [otlp_grpc/tempo, span_metrics, datadog/connector, datadog, debug]
     logs:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, batch]
       exporters: [otlp_http/loki, datadog, debug]
     # Só as métricas de APM do connector. As do span_metrics continuam só no
     # Prometheus (no Datadog seriam cobradas como custom metrics).

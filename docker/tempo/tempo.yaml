@@ -23,3 +23,15 @@ storage:
 
 usage_report:
   reporting_enabled: false
+
+# Retenção: blocos com mais de 48 h são apagados (o padrão do Tempo 3 é 14 dias).
+# No Tempo 3 a compactação/retenção fica no backend-scheduler e no backend-worker.
+backend_scheduler:
+  provider:
+    compaction:
+      compaction:
+        block_retention: 48h
+
+backend_worker:
+  compaction:
+    block_retention: 48h

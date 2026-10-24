@@ -1,0 +1,98 @@
+# Override para a VM da palestra (EC2 t4g.medium compartilhada com outros sites).
+# Uso: scripts/deploy-vm.sh. Na VM o compose roda com --env-file .env.vm (portas livres
+# na VM, senha do Grafana), que substitui o .env da raiz.
+#
+# - Teto de memória e CPU por container: somados, ~2,8 GB e 3,75 vCPU no pior caso
+#   (uso real medido: ~1 GB). A demo não consegue tirar memória dos outros serviços.
+# - Nenhuma porta pública: só o Grafana e a app, em 127.0.0.1. O nginx da VM faz o
+#   HTTPS de demo.deploypro.com.br para o Grafana.
+# - restart: unless-stopped: a demo volta sozinha se a VM reiniciar.
+# - GOMEMLIMIT nos serviços em Go: o runtime do Go não enxerga o mem_limit e deixa o
+#   heap crescer até o teto (o Grafana chegou a 640/640 MB); com ele o GC age antes.
+# - Grafana sem login para a plateia (Viewer + Explore, nada é salvo); admin com senha
+#   (GRAFANA_ADMIN_PASSWORD) só para administrar.
+services:
+  app:
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.75
+
+  nginx:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:${APP_PORT:-8090}:80"
+    mem_limit: 64m
+    cpus: 0.25
+
+  mysql:
+    restart: unless-stopped
+    # buffer pool pequeno e performance_schema desligado: ~490 MB -> ~200 MB
+    command:
+      - --innodb-buffer-pool-size=64M
+      - --performance-schema=OFF
+      - --max-connections=30
+    mem_limit: 384m
+    cpus: 0.5
+
+  collector:
+    restart: unless-stopped
+    ports: !reset []
+    environment:
+      GOMEMLIMIT: 200MiB
+    mem_limit: 256m
+    cpus: 0.5
+
+  loki:
+    restart: unless-stopped
+    ports: !reset []
+    environment:
+      GOMEMLIMIT: 250MiB
+    mem_limit: 320m
+    cpus: 0.5
+
+  tempo:
+    restart: unless-stopped
+    ports: !reset []
+    environment:
+      GOMEMLIMIT: 300MiB
+    mem_limit: 384m
+    cpus: 0.5
+
+  prometheus:
+    restart: unless-stopped
+    ports: !reset []
+    mem_limit: 256m
+    cpus: 0.25
+
+  grafana:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:${GRAFANA_PORT:-3101}:3000"
+    environment:
+      GF_SERVER_ROOT_URL: https://${DEMO_DOMAIN:-demo.deploypro.com.br}/
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      # Público (sem login) usa dashboards E o Explore: traces, logs, exemplars e os links
+      # trace <-> log. viewers_can_edit permite editar painéis só na sessão, sem salvar.
+      # Não é Admin de propósito: Admin anônimo poderia criar datasources apontando para
+      # 127.0.0.1 (outros apps da VM) ou para o metadata da AWS (a VM tem IAM role).
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_VIEWERS_CAN_EDIT: "true"
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?defina GRAFANA_ADMIN_PASSWORD no .env.vm}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/json/demo-red.json
+      # O dashboard pede refresh de 5 s; na VM o mínimo é 30 s (com a plateia abrindo o
+      # link, 5 s multiplicaria as queries por 6). O nginx ainda tem um teto global.
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 30s
+      # O instalador de plugins em segundo plano baixa apps que a demo não usa
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GOMEMLIMIT: 720MiB
+    # medido na VM (arm64): heap vivo ~330 MB, RSS ~500 MB (no x86 local, ~250 MB).
+    # Com 640 MB o cgroup batia no teto o tempo todo (memory.events max=2999).
+    mem_limit: 896m
+    cpus: 0.5
