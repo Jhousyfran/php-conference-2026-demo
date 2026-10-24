@@ -6,7 +6,7 @@ GRAFANA_PORT ?= 3000
 APP_URL      := http://localhost:$(APP_PORT)
 REQUESTS     ?= 20
 
-.PHONY: help up up-log down clean load load-fast load-pagamentos trafego logs logs-collector checklist ps
+.PHONY: help up down clean load load-fast load-pagamentos trafego log-app logs logs-collector checklist ps
 
 help: ## Lista os comandos
 	@grep -hE '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk 'BEGIN {FS = ":.*## "} {printf "  make %-15s %s\n", $$1, $$2}'
@@ -17,9 +17,6 @@ up: ## Sobe tudo (build + migrations + seed na primeira vez)
 	@echo "App:     $(APP_URL)/api/pedidos"
 	@echo "Grafana: http://localhost:$(GRAFANA_PORT)/explore"
 	@echo "Dashboard: http://localhost:$(GRAFANA_PORT)/d/demo-red"
-
-up-log: ## Sobe com o bônus de correlação log <-> trace (psr3 inject) ligado
-	OTEL_PHP_DISABLED_INSTRUMENTATIONS= docker compose up -d --build --wait
 
 down: ## Para os containers (mantém banco e traces)
 	docker compose down
@@ -44,6 +41,9 @@ load-pagamentos: ## ~20 POSTs no endpoint de pagamento (~20% falham com HTTP 500
 
 trafego: ## Tráfego misto por DURACAO segundos (padrão 120) para o dashboard RED
 	./scripts/trafego.sh $(or $(DURACAO),120)
+
+log-app: ## Últimas linhas do laravel.log (com trace_id/span_id)
+	docker compose exec app tail -n 20 storage/logs/laravel.log
 
 logs: ## Segue os logs da app e do collector
 	docker compose logs -f app collector

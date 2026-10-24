@@ -1002,6 +1002,53 @@
       "options": {
         "showHeader": true
       }
+    },
+    {
+      "id": 18,
+      "type": "row",
+      "title": "Logs (Loki) correlacionados",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "panels": []
+    },
+    {
+      "id": 19,
+      "type": "logs",
+      "title": "Logs de erro (expanda uma linha -> \"Abrir trace no Tempo\")",
+      "description": "Logs exportados via OTLP pelo auto-laravel. Cada linha carrega trace_id e span_id; o campo derivado trace_id abre o trace.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "refId": "A",
+          "expr": "{service_name=\"demo-pedidos\"} | detected_level=\"error\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      }
     }
   ]
 }

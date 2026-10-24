@@ -36,12 +36,12 @@ class PedidoController extends Controller
     }
 
     /**
-     * Bônus: correlação log <-> trace. Com a instrumentação psr3 em modo "inject",
-     * trace_id e span_id entram no contexto do log e substituem os placeholders.
+     * Correlação log <-> trace: o log sai com trace_id e span_id no laravel.log
+     * (App\Logging\AdicionaTraceContext) e é exportado via OTLP para o Loki (auto-laravel).
      */
     public function comLog()
     {
-        Log::info('Listando pedidos trace_id={trace_id} span_id={span_id}');
+        Log::info('Listando pedidos');
 
         return $this->otimizado();
     }

@@ -14,12 +14,14 @@ services:
       OTEL_SERVICE_NAME: demo-pedidos
       OTEL_TRACES_EXPORTER: otlp
       OTEL_METRICS_EXPORTER: none
-      OTEL_LOGS_EXPORTER: none
+      # Logs: o auto-laravel escuta o evento MessageLogged e exporta cada Log::info/error
+      # (e as exceções reportadas pelo handler) como LogRecord OTLP, já com trace_id e
+      # span_id do span ativo -> Collector -> Loki
+      OTEL_LOGS_EXPORTER: otlp
+      # O psr3 em modo export duplicaria os mesmos logs; fica desligado
+      OTEL_PHP_DISABLED_INSTRUMENTATIONS: psr3
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
-      # Bônus (log <-> trace): desligado por padrão. Para ligar: make up-log
-      OTEL_PHP_PSR3_MODE: inject
-      OTEL_PHP_DISABLED_INSTRUMENTATIONS: ${OTEL_PHP_DISABLED_INSTRUMENTATIONS-psr3}
     depends_on:
       mysql:
         condition: service_healthy
@@ -68,6 +70,16 @@ services:
       - "4318:4318"
     depends_on:
       - tempo
+      - loki
+
+  loki:
+    image: grafana/loki:3.7.8
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./docker/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
 
   tempo:
     image: grafana/tempo:3.0.4
@@ -107,8 +119,10 @@ services:
     depends_on:
       - tempo
       - prometheus
+      - loki
 
 volumes:
   mysql-data:
   tempo-data:
   prometheus-data:
+  loki-data:

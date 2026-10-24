@@ -19,11 +19,14 @@ curl ──> nginx ──> PHP-FPM (Laravel + ext-opentelemetry + SDK)
                         ▼
                    OTel Collector ──(OTLP gRPC)──> Tempo :3200 <──────┐
                         ├── connector span_metrics ──> :8889 <── Prometheus :9090 <── Grafana
+                        ├── logs (OTLP) ──> Loki :3100 <───────────────────┘
                         └── exporter debug (log)
 ```
 
 Além do trace, o Collector transforma os spans em **métricas RED** (Rate, Errors, Duration)
 e o Grafana já sobe com um dashboard pronto (veja [Dashboard RED](#dashboard-red-rate-errors-duration)).
+Os logs do Laravel também saem via OTLP para o Loki, com `trace_id` e `span_id`, e o Grafana
+navega de trace para log e de log para trace (veja [Log ↔ trace](#correlação-log--trace)).
 
 ## Stack e versões (todas testadas juntas)
 
@@ -35,12 +38,13 @@ e o Grafana já sobe com um dashboard pronto (veja [Dashboard RED](#dashboard-re
 | `open-telemetry/sdk` | 1.15.0 |
 | `open-telemetry/exporter-otlp` | 1.4.0 |
 | `open-telemetry/opentelemetry-auto-laravel` | 1.10.0 (suporta Laravel 10–13) |
-| `open-telemetry/opentelemetry-auto-psr3` | 0.3.0 (bônus, desligado por padrão) |
+| `open-telemetry/opentelemetry-auto-psr3` | 0.3.0 (instalado, mas desligado: duplicaria os logs, veja abaixo) |
 | `guzzlehttp/guzzle` / `nyholm/psr7` | 7.16.0 / 1.8.2 (cliente PSR-18 e fábricas PSR-17 do exporter) |
 | MySQL | 8.4.11 |
 | nginx | 1.30.6-alpine |
 | OTel Collector | `otel/opentelemetry-collector-contrib:0.163.1` |
 | Grafana Tempo | 3.0.4 (single binary, `-target=all`, storage local) |
+| Grafana Loki | 3.7.8 (single binary, storage local, ingestão OTLP nativa) |
 | Prometheus | v3.15.1 (com `--enable-feature=exemplar-storage`) |
 | Grafana | 13.2.4 |
 
@@ -48,7 +52,7 @@ e o Grafana já sobe com um dashboard pronto (veja [Dashboard RED](#dashboard-re
 
 - Docker com Compose v2 (testado com Docker 28.2 e Compose 2.36)
 - `make` e `curl`
-- Portas livres no host: **8080** (app), **3200** (Tempo), **4318** (Collector), **9090** (Prometheus) e a porta
+- Portas livres no host: **8080** (app), **3200** (Tempo), **4318** (Collector), **9090** (Prometheus), **3100** (Loki) e a porta
   do Grafana (veja abaixo)
 - Internet no **primeiro** build (imagens Docker + Composer). Depois disso tudo roda offline.
   Faça o primeiro `make up` **antes** do dia da palestra.
@@ -78,9 +82,9 @@ imprime os links.
 | `make load` / `make load-fast` | ~20 requests em `/api/pedidos` / `/api/pedidos-otimizado` (`REQUESTS=50 make load` muda a quantidade) |
 | `make load-pagamentos` | ~20 POSTs em `/api/pagamentos` (~20% respondem 500) |
 | `make trafego` | Tráfego misto por `DURACAO` segundos (padrão 120): N+1, otimizado e pagamentos |
-| `make logs` | Logs da app e do collector |
+| `make log-app` | Últimas 20 linhas do `laravel.log` (com `trace_id`/`span_id`) |
+| `make logs` | Logs dos containers da app e do collector |
 | `make logs-collector` | Reinicia o collector com o exporter `debug` em modo `detailed` (cada span no log) |
-| `make up-log` | Sobe com o bônus de correlação log ↔ trace ligado |
 | `make checklist` | Roda `scripts/checklist.sh` |
 
 Endpoints:
@@ -89,7 +93,7 @@ Endpoints:
 - `GET http://localhost:8080/api/pedidos-otimizado`: mesma resposta, com `with(['cliente', 'itens'])` (3 queries)
 - `POST http://localhost:8080/api/pagamentos`: simula um gateway de pagamento que lança
   `RuntimeException` em ~20% das chamadas (HTTP 500). Alimenta os painéis de erro.
-- `GET http://localhost:8080/api/pedidos-com-log`: bônus de correlação de log (ver abaixo)
+- `GET http://localhost:8080/api/pedidos-com-log`: o otimizado com um `Log::info` antes (correlação de log)
 
 ## Como abrir o trace no Grafana
 
@@ -130,8 +134,8 @@ TraceQL extra que "detecta" o N+1 (só retorna traces com mais de 100 spans de M
    `make load-fast` e abra um `GET /api/pedidos-otimizado`: **7 spans, 3 queries**, com
    `where id in (...)`. Nada é editado ao vivo; o plano B já está pronto.
 5. **Lado a lado e números.** Use o *split view* do Explore com os dois traces e feche com a
-   tabela abaixo. Opcional: a TraceQL `| count() > 100` como "alerta" de N+1, e o bônus de
-   log ↔ trace.
+   tabela abaixo. Opcional: a TraceQL `| count() > 100` como "alerta" de N+1, e a
+   correlação log ↔ trace.
 
 ## Dashboard RED (Rate, Errors, Duration)
 
@@ -157,8 +161,9 @@ Prometheus faz scrape do Collector em `:8889`. Ou seja: **um sinal (trace) vira 
 | Respostas por status HTTP | 200 × 500 | — |
 | Queries SQL/s × Requisições/s | Duas linhas | ~17 req/s geram ~680 queries/s no banco |
 | Resumo RED por rota | Tabela | Uma linha por rota com req/s, erro e p95 |
-| Traces com erro | TraceQL `status = error` | Abra um: o span raiz tem o evento `exception` com tipo, mensagem e stack trace |
+| Traces com erro | TraceQL `status = error` | Abra um: o span raiz tem o evento `exception` com tipo, mensagem e stack trace (seção *Events* do span) |
 | Suspeitos de N+1 | TraceQL `\| count() > 100` | A query de "detecção" do roteiro, agora como painel |
+| Logs de erro (Loki) | `detected_level="error"` | Expanda uma linha: stack trace nos campos e o botão **Abrir trace no Tempo** |
 
 Roteiro sugerido (depois do passo 5): `make trafego` → dashboard → "o p95 da
 `/api/pedidos` é 3× o do otimizado" → clique no exemplar → cai no trace com a escadinha de
@@ -169,9 +174,10 @@ Números de uma rodada de `scripts/trafego.sh 60` nesta máquina (2026-10-24, ja
 16,9 req/s; taxa de erro geral 11,8% (27,5% em `/api/pagamentos`); p95 por rota 147 ms
 (N+1), 48 ms (otimizado) e 10 ms (pagamentos); 40 queries SQL por requisição em média.
 
-> Mudou `docker/collector/config.yaml` ou `docker/prometheus/prometheus.yml`? Rode
-> `docker compose restart collector prometheus`: arquivos montados como volume não fazem o
-> compose recriar o container.
+> Mudou `docker/collector/config.yaml`, `docker/prometheus/prometheus.yml`,
+> `docker/loki/loki.yaml` ou o provisioning do Grafana? Rode
+> `docker compose restart collector prometheus loki grafana`: arquivos montados como volume
+> não fazem o compose recriar o container.
 
 ## Resultados medidos
 
@@ -221,31 +227,62 @@ Como os números foram obtidos:
 - **CLI não é traçado** (padrão do auto-laravel; `OTEL_PHP_TRACE_CLI_ENABLED=false`), e o
   entrypoint ainda desliga o SDK em migrations e seed para não gerar traces de bootstrap.
 
-## Bônus: correlação log ↔ trace (desligado por padrão)
+## Correlação log ↔ trace
 
-Usa `open-telemetry/opentelemetry-auto-psr3` com `OTEL_PHP_PSR3_MODE=inject`: a
-instrumentação injeta `trace_id` e `span_id` no contexto de cada chamada PSR-3, e o
-`replace_placeholders` do canal `single` do Laravel substitui os placeholders na mensagem.
+Cada log escrito durante uma request sai em **dois lugares**, sempre com o `trace_id` e o
+`span_id` do span ativo:
 
-Por padrão o compose define `OTEL_PHP_DISABLED_INSTRUMENTATIONS=psr3`. Para ligar:
+1. **`storage/logs/laravel.log`**: um tap do Monolog (`app/app/Logging/AdicionaTraceContext.php`,
+   ligado no canal `single` em `config/logging.php`) acrescenta os IDs no fim da linha.
+2. **Loki, via OTLP**: com `OTEL_LOGS_EXPORTER=otlp`, o `opentelemetry-auto-laravel` escuta o
+   evento `MessageLogged` e exporta cada log como LogRecord OTLP, com o contexto do trace.
+   Exceções reportadas pelo handler do Laravel saem com `exception.type`,
+   `exception.message` e `exception.stacktrace`. Collector → `otlp_http/loki` → Loki
+   (`trace_id`/`span_id` viram *structured metadata*).
 
-```bash
-make up-log
-curl -s localhost:8080/api/pedidos-com-log > /dev/null
-docker compose exec app tail -1 storage/logs/laravel.log
+O `opentelemetry-auto-psr3` está instalado, mas desligado
+(`OTEL_PHP_DISABLED_INSTRUMENTATIONS=psr3`). Testado: em modo `export` ele exporta os mesmos
+logs que o auto-laravel já exporta. Na medição, o `info` chegou 2 vezes ao Loki e o `error`,
+4 vezes (1 do auto-laravel e 3 do psr3, que engancha em `LoggerInterface` e dispara em mais
+de uma camada do logger do Laravel).
+
+O endpoint de pagamento loga `Cobrando pedido N no gateway de pagamento` e, quando falha, o
+handler do Laravel loga a exceção. Saída real do `make log-app`:
+
+```
+[2026-10-24 04:06:41] local.INFO: Cobrando pedido 66 no gateway de pagamento  {"trace_id":"2b89a58d149e83b078be9d47f5f10808","span_id":"95929e1a181c51bc"}
+[2026-10-24 04:06:41] local.ERROR: Gateway de pagamento indisponível (pedido 66) {"exception":"[object] (RuntimeException(code: 0): ... at /var/www/html/app/Http/Controllers/PagamentoController.php:23)
+[stacktrace]
+#0 ...
+"} {"trace_id":"2b89a58d149e83b078be9d47f5f10808","span_id":"95929e1a181c51bc"}
 ```
 
-**Testado e funcionando** nesta combinação de versões. Saída real:
+Conferido: o mesmo `trace_id` está no `laravel.log`, nos 2 logs do Loki (info + error com
+stack trace) e no trace do Tempo (`POST /api/pagamentos`, status ERROR).
 
-```
-[2026-10-20 01:22:09] local.INFO: Listando pedidos trace_id=6ac90356b6fb4bef15fbb9b00ddef3c1 span_id=2bd22928605db918 {"trace_id":"6ac90356b6fb4bef15fbb9b00ddef3c1","span_id":"2bd22928605db918"}
-```
+**Do trace para os logs (Tempo → Loki):**
+1. Abra um trace com erro (painel *Traces com erro* do dashboard, ou Explore → Tempo →
+   `{ status = error }`).
+2. Clique no span raiz `POST /api/pagamentos`. Nos detalhes do span há o botão
+   **Logs for this span** (ícone de documento, ao lado do nome do span).
+3. Abre um painel do Loki ao lado com a query
+   `{service_name=~".+"} | trace_id="<trace_id>"`: os logs dessa request, inclusive o erro.
 
-Busquei esse `trace_id` no Tempo (`/api/traces/6ac90356...`): o trace existe, e o `span_id`
-do log é exatamente o span raiz `GET /api/pedidos-com-log`. No Grafana, cole o trace_id
-no editor TraceQL do Explore para abrir o trace direto.
-Com o psr3 desligado (padrão), a mesma linha sai com os placeholders literais
-`trace_id={trace_id} span_id={span_id}`. Para voltar ao padrão: `make up`.
+**Do log para o trace (Loki → Tempo):**
+1. Explore → datasource **Loki** →
+   `{service_name="demo-pedidos"} | detected_level="error"` (ou o painel *Logs de erro* do
+   dashboard).
+2. Clique numa linha para expandir. Nos campos aparecem `exception_stacktrace`, `span_id` e
+   `trace_id`. Ao lado de `trace_id` há o botão **Abrir trace no Tempo** (campo derivado
+   configurado em `docker/grafana/provisioning/datasources/loki.yaml`).
+3. O trace abre num painel ao lado.
+
+**Do arquivo de log para o trace:** copie o `trace_id` de uma linha do `make log-app` e cole
+no editor TraceQL do Explore (Tempo). O trace abre direto.
+
+> No provisioning do Grafana, `${...}` é interpretado como variável de ambiente. Por isso as
+> variáveis de link estão escritas como `$${__span.traceId}` e `$${__value.raw}`. Sem o `$$`,
+> a query do botão sai com `trace_id=""` (aconteceu na primeira tentativa).
 
 ## Troubleshooting
 
@@ -289,7 +326,7 @@ Com o psr3 desligado (padrão), a mesma linha sai com os placeholders literais
 ## Estrutura
 
 ```
-docker-compose.yml          # app, nginx, mysql, collector, tempo, prometheus, grafana
+docker-compose.yml          # app, nginx, mysql, collector, tempo, loki, prometheus, grafana
 Makefile
 .env                        # portas do host (lido pelo compose)
 docker/php/Dockerfile       # PHP 8.3 FPM + ext opentelemetry/protobuf/pdo_mysql
@@ -299,13 +336,15 @@ docker/nginx/default.conf
 docker/collector/config.yaml
 docker/tempo/tempo.yaml
 docker/prometheus/prometheus.yml
-docker/grafana/provisioning/datasources/{tempo,prometheus}.yaml
+docker/loki/loki.yaml
+docker/grafana/provisioning/datasources/{tempo,prometheus,loki}.yaml
 docker/grafana/provisioning/dashboards/json/demo-red.json   # dashboard RED
 scripts/checklist.sh        # validação pré-palestra
 scripts/medir.sh            # medição de tempo de resposta
 scripts/trafego.sh          # tráfego misto para o dashboard
 app/                        # Laravel 13
   app/Http/Controllers/{Pedido,Pagamento}Controller.php
+  app/Logging/AdicionaTraceContext.php   # trace_id/span_id no laravel.log
   app/Models/{Cliente,Pedido,Item}.php
   database/{migrations,factories,seeders}
   routes/api.php

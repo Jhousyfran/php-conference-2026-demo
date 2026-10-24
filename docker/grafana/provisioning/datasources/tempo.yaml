@@ -8,3 +8,13 @@ datasources:
     url: http://tempo:3200
     isDefault: true
     editable: true
+    jsonData:
+      # Trace -> logs: cada span ganha o botão "Logs for this span", que busca no
+      # Loki os logs com o mesmo trace_id
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        customQuery: true
+        # $$ escapa o $: sem isso o provisioning do Grafana trata ${...} como variável de ambiente
+        query: '{service_name=~".+"} | trace_id="$${__span.traceId}"'

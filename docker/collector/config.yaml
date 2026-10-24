@@ -39,6 +39,10 @@ exporters:
     endpoint: 0.0.0.0:8889
     enable_open_metrics: true
 
+  # Logs OTLP (com trace_id/span_id) para o endpoint OTLP nativo do Loki
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+
   debug:
     verbosity: ${env:COLLECTOR_DEBUG_VERBOSITY:-basic}
 
@@ -53,6 +57,10 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [otlp_grpc/tempo, span_metrics, debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/loki, debug]
     metrics:
       receivers: [span_metrics]
       exporters: [prometheus]
