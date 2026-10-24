@@ -8,6 +8,22 @@ receivers:
 processors:
   batch: {}
 
+# span_metrics: transforma cada span em métricas RED (Rate, Errors, Duration).
+# Nenhuma métrica é emitida pelo PHP: tudo sai dos traces que já chegam aqui.
+connectors:
+  span_metrics:
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 75ms, 100ms, 150ms, 200ms, 300ms, 500ms, 1s, 2s]
+    dimensions:
+      - name: http.route
+      - name: http.request.method
+      - name: http.response.status_code
+    # Exemplars: cada ponto do histograma guarda um trace_id (clique no gráfico -> trace)
+    exemplars:
+      enabled: true
+    metrics_flush_interval: 5s
+
 exporters:
   otlp_grpc/tempo:
     endpoint: tempo:4317
@@ -17,6 +33,12 @@ exporters:
   # Exporter de debug: imprime no log do collector.
   # basic    -> uma linha por lote (padrão, quase silencioso)
   # detailed -> cada span com atributos (ex.: COLLECTOR_DEBUG_VERBOSITY=detailed make up)
+  # Métricas expostas em :8889/metrics para o Prometheus fazer scrape.
+  # OpenMetrics é necessário para os exemplars saírem junto.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    enable_open_metrics: true
+
   debug:
     verbosity: ${env:COLLECTOR_DEBUG_VERBOSITY:-basic}
 
@@ -30,4 +52,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp_grpc/tempo, debug]
+      exporters: [otlp_grpc/tempo, span_metrics, debug]
+    metrics:
+      receivers: [span_metrics]
+      exporters: [prometheus]

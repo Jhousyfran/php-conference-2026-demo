@@ -17,9 +17,13 @@ e no Grafana o N+1 aparece como uma "escadinha" de 201 spans `sql SELECT`.
 curl ──> nginx ──> PHP-FPM (Laravel + ext-opentelemetry + SDK)
                         │  OTLP http/protobuf :4318
                         ▼
-                   OTel Collector ──(OTLP gRPC)──> Tempo :3200 <── Grafana
+                   OTel Collector ──(OTLP gRPC)──> Tempo :3200 <──────┐
+                        ├── connector span_metrics ──> :8889 <── Prometheus :9090 <── Grafana
                         └── exporter debug (log)
 ```
+
+Além do trace, o Collector transforma os spans em **métricas RED** (Rate, Errors, Duration)
+e o Grafana já sobe com um dashboard pronto (veja [Dashboard RED](#dashboard-red-rate-errors-duration)).
 
 ## Stack e versões (todas testadas juntas)
 
@@ -37,13 +41,14 @@ curl ──> nginx ──> PHP-FPM (Laravel + ext-opentelemetry + SDK)
 | nginx | 1.30.6-alpine |
 | OTel Collector | `otel/opentelemetry-collector-contrib:0.163.1` |
 | Grafana Tempo | 3.0.4 (single binary, `-target=all`, storage local) |
+| Prometheus | v3.15.1 (com `--enable-feature=exemplar-storage`) |
 | Grafana | 13.2.4 |
 
 ## Pré-requisitos
 
 - Docker com Compose v2 (testado com Docker 28.2 e Compose 2.36)
 - `make` e `curl`
-- Portas livres no host: **8080** (app), **3200** (Tempo), **4318** (Collector) e a porta
+- Portas livres no host: **8080** (app), **3200** (Tempo), **4318** (Collector), **9090** (Prometheus) e a porta
   do Grafana (veja abaixo)
 - Internet no **primeiro** build (imagens Docker + Composer). Depois disso tudo roda offline.
   Faça o primeiro `make up` **antes** do dia da palestra.
@@ -59,6 +64,7 @@ make up          # build + sobe tudo; na 1ª vez roda migrations e seed (≈ 25 
 make checklist   # valida tudo (containers, extensão, endpoints, Grafana, trace no Tempo)
 make load        # 20 requests no endpoint com N+1
 make load-fast   # 20 requests no endpoint otimizado
+make trafego     # 2 min de tráfego misto para o dashboard RED (DURACAO=300 make trafego)
 ```
 
 `docker compose up` sozinho também funciona: o `make up` só acrescenta `--build --wait` e
@@ -70,6 +76,8 @@ imprime os links.
 | `make down` | Para os containers (mantém banco e traces) |
 | `make clean` | Para e apaga os volumes (banco e traces) |
 | `make load` / `make load-fast` | ~20 requests em `/api/pedidos` / `/api/pedidos-otimizado` (`REQUESTS=50 make load` muda a quantidade) |
+| `make load-pagamentos` | ~20 POSTs em `/api/pagamentos` (~20% respondem 500) |
+| `make trafego` | Tráfego misto por `DURACAO` segundos (padrão 120): N+1, otimizado e pagamentos |
 | `make logs` | Logs da app e do collector |
 | `make logs-collector` | Reinicia o collector com o exporter `debug` em modo `detailed` (cada span no log) |
 | `make up-log` | Sobe com o bônus de correlação log ↔ trace ligado |
@@ -79,6 +87,8 @@ Endpoints:
 
 - `GET http://localhost:8080/api/pedidos`: **com N+1** (1 + 100 + 100 = 201 queries)
 - `GET http://localhost:8080/api/pedidos-otimizado`: mesma resposta, com `with(['cliente', 'itens'])` (3 queries)
+- `POST http://localhost:8080/api/pagamentos`: simula um gateway de pagamento que lança
+  `RuntimeException` em ~20% das chamadas (HTTP 500). Alimenta os painéis de erro.
 - `GET http://localhost:8080/api/pedidos-com-log`: bônus de correlação de log (ver abaixo)
 
 ## Como abrir o trace no Grafana
@@ -122,6 +132,46 @@ TraceQL extra que "detecta" o N+1 (só retorna traces com mais de 100 spans de M
 5. **Lado a lado e números.** Use o *split view* do Explore com os dois traces e feche com a
    tabela abaixo. Opcional: a TraceQL `| count() > 100` como "alerta" de N+1, e o bônus de
    log ↔ trace.
+
+## Dashboard RED (Rate, Errors, Duration)
+
+Abra <http://localhost:3001/d/demo-red> (pasta *Demo OTel PHP*) e rode `make trafego` em
+outro terminal. O dashboard atualiza a cada 5 s.
+
+**De onde vêm as métricas:** o PHP **não emite métricas** (`OTEL_METRICS_EXPORTER=none`).
+O connector `span_metrics` do Collector lê cada span que passa e gera um contador
+(`traces_span_metrics_calls_total`) e um histograma de duração
+(`traces_span_metrics_duration_milliseconds_*`), com as dimensões `span_name`,
+`status_code`, `http.route`, `http.request.method` e `http.response.status_code`. O
+Prometheus faz scrape do Collector em `:8889`. Ou seja: **um sinal (trace) vira dois
+(trace + métrica)** sem mudar a aplicação.
+
+| Painel | O que mostra | O que falar |
+|---|---|---|
+| Requisições/s, Taxa de erro, Latência p95 | Os três números RED do serviço | Os "sinais vitais": se só puder olhar para três números, olhe para estes |
+| Queries SQL por requisição | spans `sql SELECT` ÷ requisições | Sintoma de N+1 visível **numa métrica**, sem abrir trace |
+| Requisições/s por rota | Rate, empilhado | Onde está o tráfego |
+| Taxa de erro por rota | Errors, linha tracejada em 5% | Só `/api/pagamentos` erra (~20%); a média geral esconde isso |
+| Latência p95 por rota + exemplars | Duration por rota | N+1 ~150 ms × otimizado ~50 ms × pagamento ~10 ms. **Clique num losango** (exemplar): abre o trace exato daquele ponto no Tempo |
+| p50 × p95 × p99 × média | Percentis do conjunto | A média (~40 ms) mente: o p95 é ~3× maior. Por que se usa percentil e não média |
+| Respostas por status HTTP | 200 × 500 | — |
+| Queries SQL/s × Requisições/s | Duas linhas | ~17 req/s geram ~680 queries/s no banco |
+| Resumo RED por rota | Tabela | Uma linha por rota com req/s, erro e p95 |
+| Traces com erro | TraceQL `status = error` | Abra um: o span raiz tem o evento `exception` com tipo, mensagem e stack trace |
+| Suspeitos de N+1 | TraceQL `\| count() > 100` | A query de "detecção" do roteiro, agora como painel |
+
+Roteiro sugerido (depois do passo 5): `make trafego` → dashboard → "o p95 da
+`/api/pedidos` é 3× o do otimizado" → clique no exemplar → cai no trace com a escadinha de
+201 queries. Depois: "e esses 500?" → painel *Traces com erro* → exceção do gateway no span.
+É o fluxo **métrica (algo está errado) → trace (onde e por quê)**.
+
+Números de uma rodada de `scripts/trafego.sh 60` nesta máquina (2026-10-24, janela de 1 min):
+16,9 req/s; taxa de erro geral 11,8% (27,5% em `/api/pagamentos`); p95 por rota 147 ms
+(N+1), 48 ms (otimizado) e 10 ms (pagamentos); 40 queries SQL por requisição em média.
+
+> Mudou `docker/collector/config.yaml` ou `docker/prometheus/prometheus.yml`? Rode
+> `docker compose restart collector prometheus`: arquivos montados como volume não fazem o
+> compose recriar o container.
 
 ## Resultados medidos
 
@@ -239,7 +289,7 @@ Com o psr3 desligado (padrão), a mesma linha sai com os placeholders literais
 ## Estrutura
 
 ```
-docker-compose.yml          # app, nginx, mysql, collector, tempo, grafana
+docker-compose.yml          # app, nginx, mysql, collector, tempo, prometheus, grafana
 Makefile
 .env                        # portas do host (lido pelo compose)
 docker/php/Dockerfile       # PHP 8.3 FPM + ext opentelemetry/protobuf/pdo_mysql
@@ -248,11 +298,14 @@ docker/php/zz-otel.conf     # clear_env = no
 docker/nginx/default.conf
 docker/collector/config.yaml
 docker/tempo/tempo.yaml
-docker/grafana/provisioning/datasources/tempo.yaml
+docker/prometheus/prometheus.yml
+docker/grafana/provisioning/datasources/{tempo,prometheus}.yaml
+docker/grafana/provisioning/dashboards/json/demo-red.json   # dashboard RED
 scripts/checklist.sh        # validação pré-palestra
 scripts/medir.sh            # medição de tempo de resposta
+scripts/trafego.sh          # tráfego misto para o dashboard
 app/                        # Laravel 13
-  app/Http/Controllers/PedidoController.php
+  app/Http/Controllers/{Pedido,Pagamento}Controller.php
   app/Models/{Cliente,Pedido,Item}.php
   database/{migrations,factories,seeders}
   routes/api.php

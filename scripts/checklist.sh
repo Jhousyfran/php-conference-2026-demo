@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checklist pré-palestra: valida containers, extensão, endpoints e traces no Tempo.
+# Checklist pré-palestra: valida containers, extensão, endpoints, traces no Tempo e métricas no Prometheus.
 set -u
 
 cd "$(dirname "$0")/.."
@@ -8,6 +8,7 @@ cd "$(dirname "$0")/.."
 APP_URL="http://localhost:${APP_PORT:-8080}"
 GRAFANA_URL="http://localhost:${GRAFANA_PORT:-3000}"
 TEMPO_URL="http://localhost:3200"
+PROM_URL="http://localhost:9090"
 SERVICE="demo-pedidos"
 
 ok=0; fail=0
@@ -16,7 +17,7 @@ nok()  { printf '  \033[31m✘\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 
 echo "1. Containers"
 running=$(docker compose ps --status running --services 2>/dev/null)
-for svc in app nginx mysql collector tempo grafana; do
+for svc in app nginx mysql collector tempo prometheus grafana; do
   if grep -qx "$svc" <<<"$running"; then pass "$svc rodando"; else nok "$svc NÃO está rodando"; fi
 done
 
@@ -32,10 +33,15 @@ for path in /api/pedidos /api/pedidos-otimizado; do
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$APP_URL$path")
   if [ "$code" = "200" ]; then pass "GET $path -> 200"; else nok "GET $path -> $code"; fi
 done
+# Falha em ~20% das vezes de propósito: 200 e 500 são esperados
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST "$APP_URL/api/pagamentos")
+case "$code" in 200|500) pass "POST /api/pagamentos -> $code (200 ou 500 esperados)" ;; *) nok "POST /api/pagamentos -> $code" ;; esac
 
 echo "4. Grafana"
 if curl -sf --max-time 5 "$GRAFANA_URL/api/health" >/dev/null; then pass "Grafana em $GRAFANA_URL"; else nok "Grafana não responde em $GRAFANA_URL"; fi
 if curl -sf --max-time 5 "$GRAFANA_URL/api/datasources/uid/tempo" >/dev/null; then pass "datasource Tempo provisionado"; else nok "datasource Tempo não encontrado"; fi
+if curl -sf --max-time 5 "$GRAFANA_URL/api/datasources/uid/prometheus" >/dev/null; then pass "datasource Prometheus provisionado"; else nok "datasource Prometheus não encontrado"; fi
+if curl -sf --max-time 5 "$GRAFANA_URL/api/dashboards/uid/demo-red" >/dev/null; then pass "dashboard RED em $GRAFANA_URL/d/demo-red"; else nok "dashboard demo-red não encontrado"; fi
 
 echo "5. Traces do serviço $SERVICE no Tempo"
 # Com o Tempo recém-zerado (make clean), o primeiro trace pode levar mais de 30 s
@@ -58,6 +64,17 @@ if [ -n "$found" ]; then
 else
   nok "nenhum trace de $SERVICE após ${TRACE_TIMEOUT}s (veja a seção Troubleshooting do README)"
 fi
+
+echo "6. Métricas RED (span_metrics) no Prometheus"
+# O Collector agrega a cada 5 s e o Prometheus faz scrape a cada 5 s
+found=""
+for _ in $(seq 1 10); do
+  res=$(curl -s -G --max-time 5 "$PROM_URL/api/v1/query" \
+    --data-urlencode "query=traces_span_metrics_calls_total{service_name=\"$SERVICE\"}")
+  if grep -q '"__name__"' <<<"$res"; then found=1; break; fi
+  sleep 3
+done
+if [ -n "$found" ]; then pass "traces_span_metrics_calls_total com dados"; else nok "sem métricas de $SERVICE no Prometheus (o Collector recarregou o config? docker compose restart collector)"; fi
 
 echo
 if [ "$fail" -eq 0 ]; then

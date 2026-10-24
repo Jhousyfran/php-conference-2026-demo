@@ -78,6 +78,21 @@ services:
     ports:
       - "3200:3200"
 
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # guarda os exemplars (trace_id) que o spanmetrics anexa aos histogramas
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - collector
+
   grafana:
     image: grafana/grafana:13.2.4
     environment:
@@ -91,7 +106,9 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
     depends_on:
       - tempo
+      - prometheus
 
 volumes:
   mysql-data:
   tempo-data:
+  prometheus-data:

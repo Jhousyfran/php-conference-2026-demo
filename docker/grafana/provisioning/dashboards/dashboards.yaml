@@ -1,0 +1,9 @@
+apiVersion: 1
+
+providers:
+  - name: demo
+    folder: Demo OTel PHP
+    type: file
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
